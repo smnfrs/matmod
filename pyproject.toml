@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "matmod"
+version = "0.1.0"
+description = "A framework for building and simulating macroeconomic models using symbolic mathematics"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+authors = [
+    {name = "smnfrs"},
+]
+keywords = ["economics", "simulation", "macroeconomics", "stock-flow-consistent", "input-output"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering",
+]
+dependencies = [
+    "sympy>=1.12",
+    "numpy>=1.24",
+    "pandas>=2.0",
+    "matplotlib>=3.7",
+]
+
+[project.optional-dependencies]
+dev = [
+    "jupyter",
+    "pytest",
+]
+
+[tool.setuptools.packages.find]
+include = ["matmod*"]
