@@ -84,8 +84,21 @@ class Variable:
         self._new_period = False
 
     def __repr__(self):
-        """Print method for the variable class."""
-        return f" {self.desc}: \n{self.value}"
+        """Pretty-print the variable's current value.
+
+        Renders the numeric value through SymPy for textbook-style output.
+        This is display-only and never touched by the solver hot path.
+        """
+        try:
+            if self.scalar:
+                rendered = sp.pretty(sp.Float(float(self.value)), use_unicode=True)
+            else:
+                rendered = sp.pretty(
+                    sp.Matrix(np.asarray(self.value, dtype=float)),
+                    use_unicode=True)
+        except (TypeError, ValueError):
+            rendered = str(self.value)
+        return f" {self.desc}: \n{rendered}"
 
     def _iterate(self, newval):
         """Iterate the variable forward but don't save to history.
