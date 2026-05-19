@@ -5,6 +5,7 @@ between variables using string expressions that are parsed into SymPy.
 """
 
 import re
+import numpy as np
 import sympy as sp
 from .variable import Variable
 
@@ -92,8 +93,11 @@ class Equation:
         self._parsed = False
         self._initialized = False
 
-        # Placeholder for lambdified function (not currently used)
-        self.lambdified_func = None
+        # Lazy compilation - the symbolic expr is lambdified to a NumPy
+        # callable on first calc() so the hot path never touches SymPy.
+        self._func = None
+        self._arg_vars = None
+        self._compiled = False
         self.output_val = None
 
         # Add instance to class variable first
@@ -201,23 +205,43 @@ class Equation:
 
         return expr
 
-    def calc(self):
-        """Substitute input values into expression and return the result."""
-        symbol2value = {}
+    def _compile(self):
+        """Lambdify the parsed SymPy expression into a NumPy callable.
+
+        Built once. Input symbols are de-duplicated (an equation may list the
+        same Variable more than once) while preserving order, and the matching
+        Variables are stored so calc() can pass their numeric values directly.
+        """
+        seen = set()
+        arg_syms = []
+        arg_vars = []
         for var in self.inputs:
-            symbol2value[var.symbol] = var.value
+            if var.symbol in seen:
+                continue
+            seen.add(var.symbol)
+            arg_syms.append(var.symbol)
+            arg_vars.append(var)
 
-        result = self.expr.subs(symbol2value).doit()
+        self._arg_vars = arg_vars
+        self._func = sp.lambdify(arg_syms, self.expr, modules='numpy')
+        self._compiled = True
 
-        # Handle scalar results (not a matrix)
-        if not hasattr(result, '__len__'):
-            return result
+    def calc(self):
+        """Evaluate the equation numerically at current input values.
 
-        # Handle 1-element matrices - extract the scalar
-        if len(result) == 1:
-            return result[0]
-        else:
-            return result
+        Uses the lambdified NumPy callable (no symbolic substitution). Returns
+        a Python float for scalar outputs, a 2-D NumPy array otherwise.
+        """
+        if not self._compiled:
+            self._compile()
+
+        # Input values are already float / 2-D ndarray by the Variable invariant.
+        arr = np.asarray(self._func(*[v.value for v in self._arg_vars]),
+                          dtype=float)
+
+        if self.output.scalar:
+            return float(arr.reshape(-1)[0])  # collapse any 1-element result
+        return arr if arr.ndim == 2 else arr.reshape(-1, 1)
 
     def update_symbol(self):
         """Update the symbolic representation to match output dimensions.

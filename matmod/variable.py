@@ -1,28 +1,45 @@
 """Variable classes for the IO-SFC model.
 
-This module provides the Variable and LagVariable classes for storing
-both symbolic (SymPy) and numeric representations of model variables.
+This module provides the Variable and LagVariable classes. Each variable
+stores a *numeric* value (a Python float for scalars, a 2-D NumPy array for
+vectors/matrices) used during simulation, plus a SymPy ``symbol`` used only by
+the symbolic analysis layer (Jacobian, determination checks, pretty-printing).
+
+The numeric value is the hot-path representation: the Gauss-Seidel solver reads
+and writes it every iteration. The symbol is touched only by analysis methods,
+which run once, off the hot path.
 """
 
+import math
 import numpy as np
 import pandas as pd
 from typing import Union, List, Optional
 import sympy as sp
 
 
+def _is_empty(val) -> bool:
+    """True if ``val`` represents 'no value yet' (None, [], or a 0-size array)."""
+    if val is None:
+        return True
+    if isinstance(val, list) and len(val) == 0:
+        return True
+    if hasattr(val, 'shape') and 0 in getattr(val, 'shape', ()):
+        return True
+    return False
+
+
 class Variable:
-    """A class for creating variables that stores both a SymPy symbol
-    and values for use in economic models.
+    """A model variable storing a numeric value and a SymPy symbol.
 
     Attributes:
         name: Short identifier for the variable
-        value: Current value (SymPy Matrix or scalar)
+        value: Current numeric value (float for scalars, 2-D np.ndarray otherwise)
         scalar: Whether this is a scalar (True) or vector/matrix (False)
-        symbol: SymPy symbol or MatrixSymbol for symbolic computation
+        symbol: SymPy Symbol or MatrixSymbol (used by the analysis layer only)
         desc: Human-readable description
         time: Current time period
-        hist: List of historical values
-        iterations: Values during current period's iteration process
+        hist: List of historical numeric values
+        iterations: Numeric values during the current period's iteration process
     """
 
     # Class variable to store all variables
@@ -42,24 +59,21 @@ class Variable:
 
         Args:
             name: Short identifier (e.g., 'K', 'x', 'P')
-            value: Initial value - can be number, list, or matrix
+            value: Initial value - number, list, NumPy array, or SymPy Matrix
             desc: Human-readable description
             scalar: True if scalar, False if vector/matrix
             time: Initial time period (default 0)
         """
         self.name = name
-        self.value = self.instantiate_sympy(value, scalar)
+        self.value = self.instantiate_numpy(value, scalar)
         self.scalar = scalar
         self.symbol = self.instantiate_symbol(name, self.value, scalar)
         self.desc = desc
         self.time = time
 
-        # Create time series history and add non-empty starting values
+        # Create time series history; seed it only with a real starting value
         self.hist = []
-        # Check for empty values more robustly (including empty SymPy matrices)
-        is_empty = (value is None or (isinstance(value, list) and len(value) == 0) or
-                   (hasattr(self.value, 'shape') and 0 in self.value.shape))
-        if not is_empty:
+        if not _is_empty(value):
             self.hist.append(self.value)
 
         # Add instance to class variable
@@ -71,9 +85,13 @@ class Variable:
         self._new_period = False
 
     def __repr__(self):
-        """Print method for the variable class."""
-        value_str = sp.pretty(self.value, use_unicode=True)
-        return f" {self.desc}: \n{value_str}"
+        """Pretty-print the variable's current value.
+
+        Renders the numeric value through SymPy for textbook-style output.
+        This is display-only and never touched by the solver hot path.
+        """
+        value = sp.Float(self.value) if self.scalar else sp.Matrix(self.value)
+        return f" {self.desc}: \n{sp.pretty(value, use_unicode=True)}"
 
     def _iterate(self, newval):
         """Iterate the variable forward but don't save to history.
@@ -93,11 +111,9 @@ class Variable:
         If this is a calculated variable (empty hist), prepend NaN for t=0.
         """
         # If hist is empty, this is a calculated variable - prepend NaN for t=0
-        if len(self.hist) == 0 and not self.scalar:
-            nan_val = sp.Matrix([[sp.nan]] * newval.shape[0])
-            self.hist.append(nan_val)
-        elif len(self.hist) == 0 and self.scalar:
-            self.hist.append(sp.nan)
+        if len(self.hist) == 0:
+            self.hist.append(float('nan') if self.scalar
+                             else np.full(newval.shape, np.nan))
 
         self.value = newval
         self.iterations.append(newval)
@@ -106,104 +122,83 @@ class Variable:
 
     def exogenous_update(self, newval):
         """Update an exogenous variable during simulation."""
-        self.value = self.instantiate_sympy(newval, self.scalar)
+        self.value = self.instantiate_numpy(newval, self.scalar)
         self.hist.append(self.value)
 
     def instantiate_symbol(self, name: str,
                           val: Optional[Union[int, float, List]],
                           scalar: bool) -> Union[sp.Symbol, sp.MatrixSymbol]:
-        """Create a SymPy symbol of the appropriate shape."""
+        """Create a SymPy symbol of the appropriate shape.
+
+        Shape is taken from the numeric value so the analysis layer (Jacobian
+        expansion) sees the correct matrix dimensions.
+        """
         if scalar:
-            symbol = sp.Symbol(name)
-        else:
-            symbol = sp.MatrixSymbol(name, val.shape[0], val.shape[1])
-        return symbol
-
-    def instantiate_sympy(self, val: Optional[Union[int, float, List]],
-                         scalar: bool) -> Union[sp.Expr, sp.Matrix]:
-        """Convert input to SymPy array or value with specified shape."""
-        # First convert sympy matrices or numpy vectors to list
-        if isinstance(val, (sp.Matrix, np.ndarray)):
-            val = val.tolist()
-
-        # Handle empty/none case
-        if val is None or (isinstance(val, list) and len(val) == 0):
-            return sp.Integer(0) if scalar else sp.Matrix([[]])
-
-        # Handle scalars
-        if scalar:
-            if isinstance(val, list):
-                if len(val) != 1:
-                    raise ValueError(f"Scalar must have 1 element, got {len(val)}")
-                val = val[0]
-            return sp.Float(val)
-
-        # Raise error if expecting a matrix and receive something other than a list
-        if not isinstance(val, list):
-            raise ValueError(f"Sympy matrix object requires a list")
-
-        return sp.Matrix(val)
+            return sp.Symbol(name)
+        rows, cols = np.asarray(val).shape
+        return sp.MatrixSymbol(name, rows, cols)
 
     def instantiate_numpy(self, val: Optional[Union[int, float, List]],
-                         scalar: bool) -> Union[int, float, np.ndarray]:
-        """Convert input to number or numpy array."""
-        # Handle empty/none case
-        if val is None or (isinstance(val, list) and len(val) == 0):
-            return 0 if scalar else np.array([[]])
+                          scalar: bool) -> Union[float, np.ndarray]:
+        """Convert input to a Python float (scalar) or 2-D NumPy array.
 
-        # Handle scalars
+        Vectors are stored as column vectors with shape (n, 1) so that they
+        compose correctly with NumPy matrix multiplication and with the
+        SymPy-generated element indexing used by lambdified equations.
+        """
+        # Normalise SymPy matrices to nested lists first
+        if isinstance(val, sp.MatrixBase):
+            val = val.tolist()
+
+        # Empty / none case
+        if _is_empty(val):
+            return 0.0 if scalar else np.empty((1, 0), dtype=float)
+
+        # Scalars
         if scalar:
-            if isinstance(val, list):
-                if len(val) != 1:
-                    raise ValueError(f"Scalar must have 1 element, got {len(val)}")
-            return val
-        # Handle vectors and matrices
-        else:
-            # Raise error if expecting a matrix and receive something other than a list
-            if not isinstance(val, list):
-                raise ValueError(f"Numpy array requires a list")
+            if isinstance(val, (list, tuple, np.ndarray)):
+                flat = np.asarray(val, dtype=float).reshape(-1)
+                if flat.size != 1:
+                    raise ValueError(f"Scalar must have 1 element, got {flat.size}")
+                return float(flat[0])
+            return float(val)
 
-            # Turn vectors into column vectors
-            arr = np.array(val)
-            if arr.ndim == 1:
-                arr = arr.reshape(-1, 1)
-            # Also handle row vectors (1xn arrays)
-            elif arr.ndim == 2 and arr.shape[0] == 1:
-                arr = arr.T
-            # Error for more than two dimensional array
-            elif arr.ndim > 2:
-                raise ValueError(f"Can only work with one or two dimensional arrays, received {arr.ndim}-dimensional")
+        # Vectors and matrices
+        arr = np.asarray(val, dtype=float)
+        if arr.ndim == 1:
+            # Treat a flat list as a column vector
+            arr = arr.reshape(-1, 1)
+        elif arr.ndim == 2 and arr.shape[0] == 1 and arr.shape[1] > 1:
+            # Treat a 1xn row as a column vector
+            arr = arr.T
+        elif arr.ndim > 2:
+            raise ValueError(
+                f"Can only work with one or two dimensional arrays, "
+                f"received {arr.ndim}-dimensional"
+            )
+        return arr
 
-            return arr
+    def _is_nan(self, h) -> bool:
+        """True if a history entry is the NaN placeholder."""
+        if self.scalar:
+            return math.isnan(float(h))
+        return bool(np.isnan(h).any())
 
     def create_time_series(self):
-        """Format variable history into a time series DataFrame in long format."""
-        var_df = pd.DataFrame(columns=['variable', 'row', 'column', 'time', 'value'])
-
-        # Types of sympy matrices
-        matrix_types = (sp.Matrix, sp.ImmutableDenseMatrix,
-                       sp.ImmutableSparseMatrix, sp.MutableDenseMatrix)
-
-        # Loop through the history list
-        for time, time_val in enumerate(self.hist):
-            # Check if value is a matrix or a single number
-            if isinstance(self.hist[0], matrix_types):
-                # Loop through matrix and extract values
-                for num, val in enumerate(time_val):
-                    new_row = {
-                        'variable': self.symbol,
-                        'element': self.symbol[num],
-                        'row': self.symbol[num].i,
-                        'column': self.symbol[num].j,
-                        'time': time,
-                        'value': val
-                    }
-                    var_df.loc[len(var_df)] = new_row
+        """Format variable history into a long-format time series DataFrame."""
+        rows = []
+        for time, arr in enumerate(self.hist):
+            if self.scalar:
+                rows.append({'variable': self.symbol, 'row': None,
+                             'column': None, 'time': time, 'value': arr})
             else:
-                new_row = {'variable': self.symbol, 'time': time, 'value': time_val}
-                var_df.loc[len(var_df)] = new_row
-
-        return var_df
+                for i in range(arr.shape[0]):
+                    for j in range(arr.shape[1]):
+                        rows.append({'variable': self.symbol, 'row': i,
+                                     'column': j, 'time': time,
+                                     'value': arr[i, j]})
+        return pd.DataFrame(
+            rows, columns=['variable', 'row', 'column', 'time', 'value'])
 
     def lag(self, name: str, periods: int = 1):
         """Create a LagVariable that tracks this variable's history.
@@ -229,8 +224,7 @@ class Variable:
         """
         if self.scalar:
             return float(self.value)
-        # Sum all elements of the matrix/vector
-        return float(sum(self.value))
+        return float(np.sum(self.value))
 
     def total_history(self):
         """Return time series of totals across all periods.
@@ -240,18 +234,12 @@ class Variable:
         """
         totals = []
         for h in self.hist:
-            if self.scalar:
-                # Handle sympy nan
-                if h == sp.nan or (hasattr(h, 'is_nan') and h.is_nan):
-                    totals.append(float('nan'))
-                else:
-                    totals.append(float(h))
+            if self._is_nan(h):
+                totals.append(float('nan'))
+            elif self.scalar:
+                totals.append(float(h))
             else:
-                # Check if any element is nan
-                if any(elem == sp.nan for elem in h):
-                    totals.append(float('nan'))
-                else:
-                    totals.append(float(sum(h)))
+                totals.append(float(np.sum(h)))
         return totals
 
     def sector_history(self, sector_idx=0):
@@ -263,25 +251,14 @@ class Variable:
         Returns:
             List of values for that sector across all periods (NaN for missing)
         """
-        if self.scalar:
-            result = []
-            for h in self.hist:
-                if h == sp.nan or (hasattr(h, 'is_nan') and h.is_nan):
-                    result.append(float('nan'))
-                else:
-                    result.append(float(h))
-            return result
-
         result = []
         for h in self.hist:
-            # Handle empty matrices (shouldn't happen with NaN approach, but defensive)
-            if hasattr(h, 'shape') and 0 in h.shape:
+            if self._is_nan(h):
                 result.append(float('nan'))
-            # Handle NaN values
-            elif h[sector_idx] == sp.nan:
-                result.append(float('nan'))
+            elif self.scalar:
+                result.append(float(h))
             else:
-                result.append(float(h[sector_idx]))
+                result.append(float(h.reshape(-1)[sector_idx]))
         return result
 
     def growth_rate(self, total=True):
@@ -293,24 +270,16 @@ class Variable:
         Returns:
             List of growth rates (length = len(hist) - 1), NaN where undefined
         """
-        import math
-
-        if total:
-            values = self.total_history()
-        else:
-            values = self.sector_history(0)
+        values = self.total_history() if total else self.sector_history(0)
 
         rates = []
         for i in range(1, len(values)):
-            # If either value is NaN, growth rate is NaN
             if math.isnan(values[i-1]) or math.isnan(values[i]):
                 rates.append(float('nan'))
             elif values[i-1] != 0:
-                rate = (values[i] - values[i-1]) / values[i-1]
-                rates.append(rate)
+                rates.append((values[i] - values[i-1]) / values[i-1])
             else:
-                rate = float('inf') if values[i] != 0 else 0
-                rates.append(rate)
+                rates.append(float('inf') if values[i] != 0 else 0)
 
         return rates
 
@@ -338,7 +307,6 @@ class Variable:
             label = f'{self.name} (Total)' if not self.scalar else self.name
             ax.plot(times, values, label=label, **kwargs)
         elif by_sector:
-            # Plot each sector
             n_sectors = self.value.shape[0]
             for i in range(n_sectors):
                 values = self.sector_history(i)
@@ -373,13 +341,14 @@ class LagVariable(Variable):
         self.source_variable = variable
         self.periods = periods
 
-        # Get the initial lagged value
+        # Get the initial lagged value (float if source is scalar, else 2-D array)
         initial_value = self._get_lagged_value()
+        init = (float(initial_value) if variable.scalar
+                else np.asarray(initial_value, dtype=float).tolist())
 
-        # Initialize the Variable base class
         super().__init__(
             name=name,
-            value=initial_value.tolist() if hasattr(initial_value, 'shape') else float(initial_value),
+            value=init,
             desc=f"{variable.desc} (t - {periods})",
             scalar=variable.scalar
         )
@@ -387,10 +356,10 @@ class LagVariable(Variable):
     def _get_lagged_value(self):
         """Get the current lagged value from source variable's history.
 
-        Returns NaN matrix if history is empty (calculated variable not yet computed).
+        Returns the source's current value if its history is empty (calculated
+        variable not yet computed).
         """
         if len(self.source_variable.hist) == 0:
-            # Source has no history yet - return its current value (may be empty matrix)
             return self.source_variable.value
         elif self.periods <= len(self.source_variable.hist):
             return self.source_variable.hist[-self.periods]
