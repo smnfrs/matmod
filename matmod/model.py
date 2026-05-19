@@ -463,13 +463,10 @@ class Model:
         """Get the numeric value of a variable element."""
         if var.scalar:
             return float(var.value)
-        else:
-            if hasattr(var.value, '__getitem__'):
-                if hasattr(var.value, 'shape') and len(var.value.shape) > 1 and var.value.shape[1] > 1:
-                    return float(var.value[i, j])
-                else:
-                    return float(var.value[i])
-            return float(var.value)
+        arr = np.asarray(var.value, dtype=float)
+        if arr.ndim > 1 and arr.shape[1] > 1:
+            return float(arr[i, j])
+        return float(arr.reshape(-1)[i])
 
     # =========== Dependency Analysis Methods (Phase 1) ===========
 
@@ -809,9 +806,11 @@ class Model:
                     else:
                         subs_dict[scalar_sym] = self._get_element_value(var, i, j)
         else:
-            # Original behavior
+            # Non-expanded path: only scalar substitutions are well-defined
+            # (matrix variables require expand_matrices=True).
             for var in self.variables.values():
-                subs_dict[var.symbol] = var.value
+                if var.scalar:
+                    subs_dict[var.symbol] = float(var.value)
 
         # Evaluate the Jacobian numerically
         try:
@@ -981,13 +980,11 @@ class Model:
                 # Calculate new value
                 new_value = eq.calc()
 
-                # Calculate change
+                # Calculate change (works for float or ndarray values)
                 try:
-                    if isinstance(old_value, (sp.Matrix, sp.ImmutableDenseMatrix)):
-                        change = max(abs(float(new_value[i] - old_value[i]))
-                                    for i in range(len(old_value)))
-                    else:
-                        change = abs(float(new_value) - float(old_value))
+                    old_arr = np.asarray(old_value, dtype=float)
+                    new_arr = np.asarray(new_value, dtype=float)
+                    change = float(np.max(np.abs(new_arr - old_arr)))
                     max_change = max(max_change, change)
                 except (TypeError, ValueError):
                     pass
@@ -1058,7 +1055,8 @@ class Model:
                     if var.scalar:
                         value_str = f"{float(var.value):.4f}"
                     else:
-                        value_str = str([f"{float(v):.4f}" for v in var.value])
+                        flat = np.asarray(var.value, dtype=float).reshape(-1)
+                        value_str = str([f"{v:.4f}" for v in flat])
                 except (TypeError, ValueError):
                     value_str = str(var.value)
             else:
@@ -1081,7 +1079,8 @@ class Model:
                     if var.scalar:
                         value_str = f"{float(var.value):.4f}"
                     else:
-                        value_str = str([f"{float(v):.4f}" for v in var.value])
+                        flat = np.asarray(var.value, dtype=float).reshape(-1)
+                        value_str = str([f"{v:.4f}" for v in flat])
                 except (TypeError, ValueError):
                     value_str = str(var.value)
             else:
@@ -1102,7 +1101,8 @@ class Model:
                     if var.scalar:
                         value_str = f"{float(var.value):.4f}"
                     else:
-                        value_str = str([f"{float(v):.4f}" for v in var.value])
+                        flat = np.asarray(var.value, dtype=float).reshape(-1)
+                        value_str = str([f"{v:.4f}" for v in flat])
                 except (TypeError, ValueError):
                     value_str = str(var.value)
             else:

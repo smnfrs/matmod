@@ -32,7 +32,7 @@ class CoreTests:
         Variable._clean_vars()
         v = Variable('x', 3.14, 'test scalar', scalar=True)
 
-        is_float = isinstance(v.value, sp.Float)
+        is_float = isinstance(v.value, float)
         correct_val = abs(float(v.value) - 3.14) < 1e-10
         has_hist = len(v.hist) == 1
         is_scalar = v.scalar is True
@@ -46,9 +46,9 @@ class CoreTests:
         Variable._clean_vars()
         v = Variable('P', [1.5, 2.0], 'price vector', scalar=False)
 
-        is_matrix = isinstance(v.value, sp.Matrix)
+        is_matrix = isinstance(v.value, np.ndarray)
         correct_shape = v.value.shape == (2, 1)
-        correct_vals = float(v.value[0]) == 1.5 and float(v.value[1]) == 2.0
+        correct_vals = float(v.value[0, 0]) == 1.5 and float(v.value[1, 0]) == 2.0
 
         passed = is_matrix and correct_shape and correct_vals
         return self._report('matrix_variable', passed,
@@ -171,7 +171,7 @@ class CoreTests:
 
         result = eq.calc()
         # (I - a)^-1 * y should give output > final demand
-        x0, x1 = float(result[0]), float(result[1])
+        x0, x1 = float(result[0, 0]), float(result[1, 0])
         passed = x0 > 100 and x1 > 80
         return self._report('matrix_equation', passed, f"x=[{x0:.1f}, {x1:.1f}]")
 
@@ -188,7 +188,7 @@ class CoreTests:
         eq = Equation('eq_y', 'eye(n) * x', y, x, model=model)
 
         result = eq.calc()
-        passed = float(result[0]) == 10.0 and float(result[1]) == 20.0
+        passed = float(result[0, 0]) == 10.0 and float(result[1, 0]) == 20.0
         return self._report('equation_constants', passed, f"result={result.T}")
 
     # ==================== Model Tests ====================
