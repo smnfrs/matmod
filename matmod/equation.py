@@ -276,6 +276,30 @@ class Equation:
         expr_str = sp.pretty(self.expr, use_unicode=True)
         return f"{self.output.name}, {self.output.desc} = \n {expr_str}"
 
+    @staticmethod
+    def _latex_escape_text(text):
+        """Escape LaTeX-special characters in free-text (for \\text{...})."""
+        replacements = {
+            '\\': r'\textbackslash{}', '&': r'\&', '%': r'\%', '$': r'\$',
+            '#': r'\#', '_': r'\_', '{': r'\{', '}': r'\}',
+            '~': r'\textasciitilde{}', '^': r'\textasciicircum{}',
+        }
+        return ''.join(replacements.get(ch, ch) for ch in str(text))
+
+    def _repr_latex_(self):
+        """Render the equation as typeset LaTeX in Jupyter.
+
+        Falls back to the plain-text repr (via the notebook's default
+        text rendering) if the expression cannot be converted to LaTeX.
+        """
+        try:
+            lhs = sp.latex(sp.Symbol(self.output.name))
+            rhs = sp.latex(self.expr)
+        except Exception:
+            return None  # Jupyter falls back to __repr__
+        desc = self._latex_escape_text(self.output.desc)
+        return rf"$\displaystyle {lhs} = {rhs} \quad (\text{{{desc}}})$"
+
     @property
     def input_names(self):
         """Return list of input variable names."""
