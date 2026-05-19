@@ -235,27 +235,13 @@ class Equation:
         if not self._compiled:
             self._compile()
 
-        args = []
-        for var in self._arg_vars:
-            val = var.value
-            if var.scalar:
-                args.append(float(val))
-            else:
-                args.append(np.asarray(val, dtype=float))
-
-        raw = self._func(*args)
-        arr = np.asarray(raw, dtype=float)
+        # Input values are already float / 2-D ndarray by the Variable invariant.
+        arr = np.asarray(self._func(*[v.value for v in self._arg_vars]),
+                          dtype=float)
 
         if self.output.scalar:
-            # Collapse any 1-element matrix result to a scalar
-            return float(arr.reshape(-1)[0])
-
-        # Vector/matrix output: always present as a 2-D array
-        if arr.ndim == 0:
-            return arr.reshape(1, 1)
-        if arr.ndim == 1:
-            return arr.reshape(-1, 1)
-        return arr
+            return float(arr.reshape(-1)[0])  # collapse any 1-element result
+        return arr if arr.ndim == 2 else arr.reshape(-1, 1)
 
     def update_symbol(self):
         """Update the symbolic representation to match output dimensions.

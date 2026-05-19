@@ -10,6 +10,7 @@ and writes it every iteration. The symbol is touched only by analysis methods,
 which run once, off the hot path.
 """
 
+import math
 import numpy as np
 import pandas as pd
 from typing import Union, List, Optional
@@ -89,16 +90,8 @@ class Variable:
         Renders the numeric value through SymPy for textbook-style output.
         This is display-only and never touched by the solver hot path.
         """
-        try:
-            if self.scalar:
-                rendered = sp.pretty(sp.Float(float(self.value)), use_unicode=True)
-            else:
-                rendered = sp.pretty(
-                    sp.Matrix(np.asarray(self.value, dtype=float)),
-                    use_unicode=True)
-        except (TypeError, ValueError):
-            rendered = str(self.value)
-        return f" {self.desc}: \n{rendered}"
+        value = sp.Float(self.value) if self.scalar else sp.Matrix(self.value)
+        return f" {self.desc}: \n{sp.pretty(value, use_unicode=True)}"
 
     def _iterate(self, newval):
         """Iterate the variable forward but don't save to history.
@@ -119,10 +112,8 @@ class Variable:
         """
         # If hist is empty, this is a calculated variable - prepend NaN for t=0
         if len(self.hist) == 0:
-            if self.scalar:
-                self.hist.append(float('nan'))
-            else:
-                self.hist.append(np.full(np.asarray(newval).shape, np.nan))
+            self.hist.append(float('nan') if self.scalar
+                             else np.full(newval.shape, np.nan))
 
         self.value = newval
         self.iterations.append(newval)
@@ -144,9 +135,7 @@ class Variable:
         """
         if scalar:
             return sp.Symbol(name)
-        arr = np.asarray(val)
-        rows = arr.shape[0] if arr.ndim >= 1 else 1
-        cols = arr.shape[1] if arr.ndim >= 2 else 1
+        rows, cols = np.asarray(val).shape
         return sp.MatrixSymbol(name, rows, cols)
 
     def instantiate_numpy(self, val: Optional[Union[int, float, List]],
@@ -189,53 +178,25 @@ class Variable:
             )
         return arr
 
-    # Kept for backwards compatibility; no longer used by the hot path.
-    def instantiate_sympy(self, val, scalar):
-        """Legacy: convert input to a SymPy value/matrix."""
-        if isinstance(val, (sp.Matrix, np.ndarray)):
-            val = np.asarray(val).tolist()
-        if _is_empty(val):
-            return sp.Integer(0) if scalar else sp.Matrix([[]])
-        if scalar:
-            if isinstance(val, list):
-                if len(val) != 1:
-                    raise ValueError(f"Scalar must have 1 element, got {len(val)}")
-                val = val[0]
-            return sp.Float(val)
-        if not isinstance(val, list):
-            raise ValueError("Sympy matrix object requires a list")
-        return sp.Matrix(val)
-
     def _is_nan(self, h) -> bool:
         """True if a history entry is the NaN placeholder."""
-        if np.isscalar(h) or (hasattr(h, 'ndim') and np.asarray(h).ndim == 0):
-            try:
-                return bool(np.isnan(float(h)))
-            except (TypeError, ValueError):
-                return False
-        arr = np.asarray(h, dtype=float)
-        return arr.size > 0 and bool(np.isnan(arr).any())
+        if self.scalar:
+            return math.isnan(float(h))
+        return bool(np.isnan(h).any())
 
     def create_time_series(self):
         """Format variable history into a long-format time series DataFrame."""
         rows = []
-        for time, time_val in enumerate(self.hist):
+        for time, arr in enumerate(self.hist):
             if self.scalar:
                 rows.append({'variable': self.symbol, 'row': None,
-                             'column': None, 'time': time, 'value': time_val})
+                             'column': None, 'time': time, 'value': arr})
             else:
-                arr = np.asarray(time_val, dtype=float)
-                n_rows = arr.shape[0]
-                n_cols = arr.shape[1] if arr.ndim > 1 else 1
-                for i in range(n_rows):
-                    for j in range(n_cols):
-                        rows.append({
-                            'variable': self.symbol,
-                            'row': i,
-                            'column': j,
-                            'time': time,
-                            'value': arr[i, j] if arr.ndim > 1 else arr[i],
-                        })
+                for i in range(arr.shape[0]):
+                    for j in range(arr.shape[1]):
+                        rows.append({'variable': self.symbol, 'row': i,
+                                     'column': j, 'time': time,
+                                     'value': arr[i, j]})
         return pd.DataFrame(
             rows, columns=['variable', 'row', 'column', 'time', 'value'])
 
@@ -278,7 +239,7 @@ class Variable:
             elif self.scalar:
                 totals.append(float(h))
             else:
-                totals.append(float(np.sum(np.asarray(h, dtype=float))))
+                totals.append(float(np.sum(h)))
         return totals
 
     def sector_history(self, sector_idx=0):
@@ -297,7 +258,7 @@ class Variable:
             elif self.scalar:
                 result.append(float(h))
             else:
-                result.append(float(np.asarray(h, dtype=float).reshape(-1)[sector_idx]))
+                result.append(float(h.reshape(-1)[sector_idx]))
         return result
 
     def growth_rate(self, total=True):
@@ -309,8 +270,6 @@ class Variable:
         Returns:
             List of growth rates (length = len(hist) - 1), NaN where undefined
         """
-        import math
-
         values = self.total_history() if total else self.sector_history(0)
 
         rates = []
@@ -348,7 +307,7 @@ class Variable:
             label = f'{self.name} (Total)' if not self.scalar else self.name
             ax.plot(times, values, label=label, **kwargs)
         elif by_sector:
-            n_sectors = np.asarray(self.value).shape[0]
+            n_sectors = self.value.shape[0]
             for i in range(n_sectors):
                 values = self.sector_history(i)
                 ax.plot(times, values, label=f'{self.name}[{i}]', **kwargs)
@@ -382,14 +341,10 @@ class LagVariable(Variable):
         self.source_variable = variable
         self.periods = periods
 
-        # Get the initial lagged value
+        # Get the initial lagged value (float if source is scalar, else 2-D array)
         initial_value = self._get_lagged_value()
-
-        # Initialize the Variable base class
-        if hasattr(initial_value, 'shape') and np.asarray(initial_value).ndim >= 1:
-            init = np.asarray(initial_value, dtype=float).tolist()
-        else:
-            init = float(initial_value)
+        init = (float(initial_value) if variable.scalar
+                else np.asarray(initial_value, dtype=float).tolist())
 
         super().__init__(
             name=name,

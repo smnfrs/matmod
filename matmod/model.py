@@ -463,10 +463,8 @@ class Model:
         """Get the numeric value of a variable element."""
         if var.scalar:
             return float(var.value)
-        arr = np.asarray(var.value, dtype=float)
-        if arr.ndim > 1 and arr.shape[1] > 1:
-            return float(arr[i, j])
-        return float(arr.reshape(-1)[i])
+        arr = var.value  # 2-D ndarray by the Variable invariant
+        return float(arr[i, j] if arr.shape[1] > 1 else arr[i, 0])
 
     # =========== Dependency Analysis Methods (Phase 1) ===========
 
@@ -962,8 +960,6 @@ class Model:
                 'values': dict[str, any]  # Final values for all endogenous variables
             }
         """
-        import sympy as sp
-
         # Store initial values to restore later
         initial_values = {name: var.value for name, var in self.variables.items()}
 
@@ -982,9 +978,7 @@ class Model:
 
                 # Calculate change (works for float or ndarray values)
                 try:
-                    old_arr = np.asarray(old_value, dtype=float)
-                    new_arr = np.asarray(new_value, dtype=float)
-                    change = float(np.max(np.abs(new_arr - old_arr)))
+                    change = float(np.max(np.abs(np.subtract(new_value, old_value))))
                     max_change = max(max_change, change)
                 except (TypeError, ValueError):
                     pass
@@ -1055,8 +1049,8 @@ class Model:
                     if var.scalar:
                         value_str = f"{float(var.value):.4f}"
                     else:
-                        flat = np.asarray(var.value, dtype=float).reshape(-1)
-                        value_str = str([f"{v:.4f}" for v in flat])
+                        value_str = str([f"{v:.4f}"
+                                         for v in var.value.reshape(-1)])
                 except (TypeError, ValueError):
                     value_str = str(var.value)
             else:
@@ -1079,8 +1073,8 @@ class Model:
                     if var.scalar:
                         value_str = f"{float(var.value):.4f}"
                     else:
-                        flat = np.asarray(var.value, dtype=float).reshape(-1)
-                        value_str = str([f"{v:.4f}" for v in flat])
+                        value_str = str([f"{v:.4f}"
+                                         for v in var.value.reshape(-1)])
                 except (TypeError, ValueError):
                     value_str = str(var.value)
             else:
@@ -1101,8 +1095,8 @@ class Model:
                     if var.scalar:
                         value_str = f"{float(var.value):.4f}"
                     else:
-                        flat = np.asarray(var.value, dtype=float).reshape(-1)
-                        value_str = str([f"{v:.4f}" for v in flat])
+                        value_str = str([f"{v:.4f}"
+                                         for v in var.value.reshape(-1)])
                 except (TypeError, ValueError):
                     value_str = str(var.value)
             else:
